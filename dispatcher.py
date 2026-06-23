@@ -122,7 +122,7 @@ def is_responsible_for(target_time, target_hour):
         
     if target_hour == 15:
         return target_time < hour_end
-    elif target_hour == 22:
+    elif target_hour == 23:
         return target_time >= hour_start
     else:
         return hour_start <= target_time < hour_end
@@ -158,6 +158,7 @@ if not TARGET_HOUR_ENV:
 target_hour = int(TARGET_HOUR_ENV)
 known_schedules = {}          # url_key -> ts or "LIVE"
 dispatched_schedules = set()  # url_key only
+current_active_runs = set()   # Cached active runs snapshot
 
 script_start_time = datetime.now(jst)
 last_fetch_time = None
@@ -235,27 +236,27 @@ while True:
             except Exception as e:
                 print(f"Error checking {room_link}: {e}")
 
-        # ---- Dispatch check loop ----
-        for url_key, ts in list(known_schedules.items()):
-            if url_key in dispatched_schedules:
-                continue
+    # ---- Dispatch check loop (Runs every 10 seconds) ----
+    for url_key, ts in list(known_schedules.items()):
+        if url_key in dispatched_schedules:
+            continue
 
-            should_dispatch = False
-            if ts == "LIVE":
+        should_dispatch = False
+        if ts == "LIVE":
+            should_dispatch = True
+        else:
+            target_time = datetime.fromtimestamp(ts, jst) - timedelta(minutes=15)
+            if now >= target_time:
                 should_dispatch = True
-            else:
-                target_time = datetime.fromtimestamp(ts, jst) - timedelta(minutes=15)
-                if now >= target_time:
-                    should_dispatch = True
 
-            if should_dispatch:
-                # Intersect with our active run snapshot to check if a download workflow is already running
-                already_running = any(url_key in title for title in current_active_runs)
-                
-                if not already_running:
-                    dispatch_download(url_key)
-                else:
-                    print(f"[SKIP DISPATCH] Download for {url_key} is already active or recently ran in GitHub Actions.")
-                dispatched_schedules.add(url_key)
+        if should_dispatch:
+            # Intersect with our active run snapshot to check if a download workflow is already running
+            already_running = any(url_key in title for title in current_active_runs)
+            
+            if not already_running:
+                dispatch_download(url_key)
+            else:
+                print(f"[SKIP DISPATCH] Download for {url_key} is already active or recently ran in GitHub Actions.")
+            dispatched_schedules.add(url_key)
 
     time.sleep(10)
