@@ -1,4 +1,5 @@
 name: Download Handler
+run-name: Download stream for ${{ github.event.client_payload.url_key }}
 
 on:
   repository_dispatch:

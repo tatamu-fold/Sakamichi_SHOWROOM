@@ -2,8 +2,13 @@ name: Dispatcher to Trigger Download
 
 on:
   schedule:
-    - cron: '0 7 * * *'  # 16:00 JST 1630-2115 #https://aknog.github.io/srdata/
-  workflow_dispatch:     
+    - cron: '0 4 * * *'  # 13:00 JST
+  workflow_dispatch:
+    inputs:
+      target_hour:
+        description: 'Target hour for monitoring (e.g. 15-22)'
+        required: false
+        default: ''
 
 jobs:
   dispatcher:
@@ -27,3 +32,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
           TARGET_REPO: ${{ github.repository }} #your-username/your-repo 
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TARGET_HOUR: ${{ inputs.target_hour }}
