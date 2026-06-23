@@ -13,6 +13,9 @@ TARGET_HOUR_ENV = os.getenv("TARGET_HOUR", "")
 API_URL = f"https://api.github.com/repos/{TARGET_REPO}/dispatches"
 jst = pytz.timezone("Asia/Tokyo")
 
+# Lock the baseline date at script initialization to prevent day/hour shifting during runtime
+SCRIPT_INIT_TIME = datetime.now(jst)
+
 
 def check_day_relation_jst(timestamp: int) -> str:
     target_date = datetime.fromtimestamp(timestamp, jst).date()
@@ -33,8 +36,11 @@ def dispatch_download(url_key):
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    response = requests.post(API_URL, json=payload, headers=headers)
-    print(f"[DISPATCH] {url_key} - Status:", response.status_code)
+    try:
+        response = requests.post(API_URL, json=payload, headers=headers, timeout=10)
+        print(f"[DISPATCH] {url_key} - Status:", response.status_code)
+    except Exception as e:
+        print(f"[DISPATCH ERROR] {url_key} - {e}")
 
 
 def dispatch_self(target_hour: int):
@@ -49,46 +55,47 @@ def dispatch_self(target_hour: int):
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    response = requests.post(url, json=payload, headers=headers)
-    print(f"[CHAIN DISPATCH] Triggered target_hour={target_hour} - Status:", response.status_code)
     try:
-        print("Response:", response.text)
-    except Exception:
-        pass
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"[CHAIN DISPATCH] Triggered target_hour={target_hour} - Status:", response.status_code)
+    except Exception as e:
+        print(f"[CHAIN DISPATCH ERROR] {e}")
 
 
-def is_already_downloading(url_key):
-    url = f"https://api.github.com/repos/{TARGET_REPO}/actions/runs"
+# Optimization: Fetch all active runs once per cycle to prevent GitHub API rate limit exhaustion
+def get_active_downloading_keys():
+    active_keys = set()
+    url = f"https://api.github.com/repos/{TARGET_REPO}/actions/runs?per_page=50"
     headers = {
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             runs = response.json().get("workflow_runs", [])
+            now_utc = datetime.now(pytz.UTC)
             for run in runs:
                 display_title = run.get("display_title", "")
                 status = run.get("status", "")
-                # Check if this run is for our url_key
-                if url_key in display_title:
-                    # If it's currently running, queued, or completed in the last 2 hours
-                    if status in ["in_progress", "queued"]:
-                        return True
-                    
+                
+                is_active = status in ["in_progress", "queued"]
+                if not is_active:
                     created_at_str = run.get("created_at")
                     if created_at_str:
-                        # Parse UTC timestamp (e.g. 2026-06-23T02:18:27Z)
                         created_at = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
-                        now_utc = datetime.now(pytz.UTC)
+                        # Mark as active if it completed within the last 2 hours to avoid race duplicates
                         if (now_utc - created_at).total_seconds() < 2 * 3600:
-                            return True
+                            is_active = True
+                
+                if is_active and display_title:
+                    active_keys.add(display_title)
         else:
             print(f"[WARN] Failed to fetch workflow runs: {response.status_code}")
     except Exception as e:
         print(f"[WARN] Error checking workflow runs: {e}")
-    return False
+    return active_keys
 
 
 def get_target_time(ts, jst_now):
@@ -100,13 +107,14 @@ def get_target_time(ts, jst_now):
         return None
 
 
-def is_responsible_for(target_time, target_hour, jst_now):
+def is_responsible_for(target_time, target_hour):
     if target_time is None:
         return False
         
-    base_dt = jst_now.replace(minute=0, second=0, microsecond=0)
-    hour_start = base_dt.replace(hour=target_hour)
+    # Build absolute intervals using the firm script initialization date to eliminate time-drift
+    hour_start = SCRIPT_INIT_TIME.replace(hour=target_hour, minute=0, second=0, microsecond=0)
     
+    # Handle cross-day boundary transition elegantly
     if target_hour == 23:
         hour_end = hour_start.replace(hour=0) + timedelta(days=1)
     else:
@@ -132,7 +140,7 @@ all_links = data["room_link_n"] + data["room_link_s"] + data["room_link_h"]
 
 # Check if we are initiator or active monitor
 if not TARGET_HOUR_ENV:
-    # Initiator mode: run at 13:00 JST, wait until 15:00 JST to call the first monitor run
+    # Initiator mode: runs at 13:00 JST, waits until 15:00 JST to invoke the first monitor instance
     now = datetime.now(jst)
     target_start = now.replace(hour=15, minute=0, second=0, microsecond=0)
     if now < target_start:
@@ -156,19 +164,20 @@ last_fetch_time = None
 next_dispatched = False
 
 print(f"Monitoring for target_hour={target_hour} JST")
-print("Running for 1.2 hours (72 minutes), fetching API every 1 minute...")
+print("Running for 1.33 hours (80 minutes), fetching API every 1 minute...")
 
 while True:
     now = datetime.now(jst)
     elapsed = (now - script_start_time).total_seconds()
 
-    if elapsed >= 72 * 60:
-        print("1.2 hours have passed. Exiting dispatcher.")
+    # Safety: Extended from 72 to 80 minutes to establish a robust 20-minute overlap cushion
+    if elapsed >= 80 * 60:
+        print("80 minutes have passed. Exiting dispatcher.")
         break
 
-    # Trigger next hour's run at the 60-minute mark
+    # Trigger next hour's runner right at the 60-minute mark (extended past 22 to secure late night handoffs)
     if elapsed >= 3600 and not next_dispatched:
-        if target_hour < 22:
+        if target_hour < 23:
             dispatch_self(target_hour + 1)
         next_dispatched = True
 
@@ -177,10 +186,19 @@ while True:
         last_fetch_time = now
         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Fetching schedules from API...")
 
+        # Snapshot current GitHub Action runs once per minute to conserve API rate limits
+        current_active_runs = get_active_downloading_keys()
+
         for room_link in all_links:
             try:
                 room_api = f"https://public-api.showroom-cdn.com/room/{room_link}"
-                result = requests.get(room_api).json()
+                res = requests.get(room_api, timeout=10)
+                if res.status_code != 200:
+                    continue
+                result = res.json()
+
+                if not isinstance(result, dict):
+                    continue
 
                 if "nekojita" in room_api and "乃木坂" not in result.get("name", ""):
                     continue
@@ -195,8 +213,8 @@ while True:
 
                 if ts:
                     target_time = get_target_time(ts, now)
-                    # Filter: only keep schedules within our target hour's window
-                    if not is_responsible_for(target_time, target_hour, now):
+                    # Filter: check if this specific stream falls within our designated responsibility segment
+                    if not is_responsible_for(target_time, target_hour):
                         continue
 
                     if known_schedules.get(url_key) != ts:
@@ -217,25 +235,27 @@ while True:
             except Exception as e:
                 print(f"Error checking {room_link}: {e}")
 
-    # ---- Dispatch check loop ----
-    for url_key, ts in list(known_schedules.items()):
-        if url_key in dispatched_schedules:
-            continue  # already dispatched once in this run
+        # ---- Dispatch check loop ----
+        for url_key, ts in list(known_schedules.items()):
+            if url_key in dispatched_schedules:
+                continue
 
-        should_dispatch = False
-
-        if ts == "LIVE":
-            should_dispatch = True
-        else:
-            target_time = datetime.fromtimestamp(ts, jst) - timedelta(minutes=15)
-            if now >= target_time:
+            should_dispatch = False
+            if ts == "LIVE":
                 should_dispatch = True
-
-        if should_dispatch:
-            if not is_already_downloading(url_key):
-                dispatch_download(url_key)
             else:
-                print(f"[SKIP DISPATCH] Download for {url_key} is already active or recently ran.")
-            dispatched_schedules.add(url_key)
+                target_time = datetime.fromtimestamp(ts, jst) - timedelta(minutes=15)
+                if now >= target_time:
+                    should_dispatch = True
+
+            if should_dispatch:
+                # Intersect with our active run snapshot to check if a download workflow is already running
+                already_running = any(url_key in title for title in current_active_runs)
+                
+                if not already_running:
+                    dispatch_download(url_key)
+                else:
+                    print(f"[SKIP DISPATCH] Download for {url_key} is already active or recently ran in GitHub Actions.")
+                dispatched_schedules.add(url_key)
 
     time.sleep(10)
