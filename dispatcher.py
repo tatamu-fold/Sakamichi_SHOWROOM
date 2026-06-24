@@ -150,7 +150,9 @@ if not TARGET_HOUR_ENV:
     else:
         print(f"Initiator mode: Already past 15:00 JST (current: {now.strftime('%H:%M:%S')}). Dispatching 15:00 workflow immediately.")
 
-    dispatch_self(15)
+    # Calculate the next hour dynamically (handling 24-hour wrap-around)
+    next_hour = (now + timedelta(hours=1)).hour
+    dispatch_self(next_hour)
     print("Initiator run completed. Exiting.")
     exit(0)
 
@@ -165,15 +167,15 @@ last_fetch_time = None
 next_dispatched = False
 
 print(f"Monitoring for target_hour={target_hour} JST")
-print("Running for 1.33 hours (80 minutes), fetching API every 1 minute...")
+print("Running for 1.2 hours (72 minutes), fetching API every 1 minute...")
 
 while True:
     now = datetime.now(jst)
     elapsed = (now - script_start_time).total_seconds()
 
-    # Safety: Extended from 72 to 80 minutes to establish a robust 20-minute overlap cushion
-    if elapsed >= 80 * 60:
-        print("80 minutes have passed. Exiting dispatcher.")
+    # Safety: Extended from 72 to 72 minutes to establish a robust 20-minute overlap cushion
+    if elapsed >= 72 * 60:
+        print("72 minutes have passed. Exiting dispatcher.")
         break
 
     # Trigger next hour's runner right at the 60-minute mark (extended past 22 to secure late night handoffs)
