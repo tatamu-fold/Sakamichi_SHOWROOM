@@ -24,6 +24,8 @@ elif url_key in data["room_link_s"]:
     channel_id = data["channel_id_s"]
 elif url_key in data["room_link_h"]:
     channel_id = data["channel_id_h"]
+elif url_key in data.get("room_link_test", []):
+    channel_id = data["channel_id_test"]
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = channel_id
 

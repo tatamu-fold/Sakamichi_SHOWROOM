@@ -3,6 +3,7 @@
     "channel_id_n": "-1002666429190",
     "channel_id_s": "-1002590363008",
     "channel_id_h": "-1002432971995",
+    "channel_id_test": "-1002432971995",    
     "room_link_n": [
         "nekojita",
         "46_itouriria",
@@ -96,5 +97,9 @@
         "46_MIYACHI_SUMIRE",
         "46_YAMASHITA_HARUKA",
         "46_WATANABE_RINA"
+    ],
+    "room_link_test": [
+        "48_RARA_NAGANO",
+        "48_SUTO_RINKA"
     ]
 }

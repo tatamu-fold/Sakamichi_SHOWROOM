@@ -136,7 +136,7 @@ with open("data.json", "r") as f:
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = data["channel_id"]
 
-all_links = data["room_link_n"] + data["room_link_s"] + data["room_link_h"]
+all_links = data["room_link_n"] + data["room_link_s"] + data["room_link_h"] + data.get("room_link_test", [])
 
 # Check if we are initiator or active monitor
 if not TARGET_HOUR_ENV:
@@ -197,6 +197,7 @@ while True:
                 if res.status_code != 200:
                     continue
                 result = res.json()
+                print(f"Checked {room_link}: is_live={result.get('is_live')} next_live_schedule={result.get('next_live_schedule')}")
 
                 if not isinstance(result, dict):
                     continue
