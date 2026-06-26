@@ -2,7 +2,7 @@ name: Dispatcher to Trigger Download
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # 13:00 JST
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       target_hour:
