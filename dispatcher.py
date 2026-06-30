@@ -8,22 +8,17 @@ import time
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TARGET_REPO = os.getenv("TARGET_REPO")
-TARGET_HOUR_ENV = os.getenv("TARGET_HOUR", "")
 
 API_URL = f"https://api.github.com/repos/{TARGET_REPO}/dispatches"
 jst = pytz.timezone("Asia/Tokyo")
 
-# Lock the baseline date at script initialization to prevent day/hour shifting during runtime
 SCRIPT_INIT_TIME = datetime.now(jst)
 
 
 def check_day_relation_jst(timestamp: int) -> str:
     target_date = datetime.fromtimestamp(timestamp, jst).date()
     today_date = datetime.now(jst).date()
-    if target_date == today_date:
-        return "today"
-    else:
-        return "future"
+    return "today" if target_date == today_date else "future"
 
 
 def dispatch_download(url_key):
@@ -43,12 +38,13 @@ def dispatch_download(url_key):
         print(f"[DISPATCH ERROR] {url_key} - Failed to fire webhook: {e}")
 
 
-def dispatch_self(target_hour: int):
+def dispatch_self():
+    """Triggers the next workflow run unconditionally."""
     url = f"https://api.github.com/repos/{TARGET_REPO}/actions/workflows/dispatcher.yml/dispatches"
     ref = os.getenv("GITHUB_REF_NAME", "main")
     payload = {
         "ref": ref,
-        "inputs": {"target_hour": str(target_hour)},
+        "inputs": {},
     }
     headers = {
         "Accept": "application/vnd.github+json",
@@ -57,12 +53,13 @@ def dispatch_self(target_hour: int):
     }
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"[CHAIN DISPATCH] Triggered target_hour={target_hour} - Status: {response.status_code}")
+        print(
+            f"[CHAIN DISPATCH] Triggered next runner cycle successfully - Status: {response.status_code}"
+        )
     except Exception as e:
-        print(f"[CHAIN DISPATCH ERROR] Failed to chain target_hour={target_hour}: {e}")
+        print(f"[CHAIN DISPATCH ERROR] Failed to chain next cycle: {e}")
 
 
-# Optimization: Fetch all active runs once per cycle to prevent GitHub API rate limit exhaustion
 def get_active_downloading_keys():
     active_keys = set()
     url = f"https://api.github.com/repos/{TARGET_REPO}/actions/runs?per_page=50"
@@ -79,18 +76,22 @@ def get_active_downloading_keys():
             for run in runs:
                 display_title = run.get("display_title", "")
                 status = run.get("status", "")
-                
+
                 is_active = status in ["in_progress", "queued"]
                 if not is_active:
                     created_at_str = run.get("created_at")
                     if created_at_str:
-                        created_at = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC)
+                        created_at = datetime.strptime(
+                            created_at_str, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=pytz.UTC)
                         if (now_utc - created_at).total_seconds() < 2 * 3600:
                             is_active = True
-                
+
                 if is_active and display_title:
                     active_keys.add(display_title)
-            print(f"[DEBUG: GH RUNS] Parsed active workflows titles snapshot: {list(active_keys)}")
+            print(
+                f"[DEBUG: GH RUNS] Parsed active workflows titles snapshot: {list(active_keys)}"
+            )
         else:
             print(f"[WARN] Failed to fetch workflow runs: {response.status_code}")
     except Exception as e:
@@ -110,63 +111,71 @@ def get_target_time(ts, jst_now):
 def is_responsible_for(target_time, target_hour):
     if target_time is None:
         return False
-        
-    hour_start = SCRIPT_INIT_TIME.replace(hour=target_hour, minute=0, second=0, microsecond=0)
-    
+
+    hour_start = SCRIPT_INIT_TIME.replace(
+        hour=target_hour, minute=0, second=0, microsecond=0
+    )
+
     if target_hour == 23:
         hour_end = hour_start.replace(hour=0) + timedelta(days=1)
     else:
         hour_end = hour_start.replace(hour=target_hour + 1)
-        
-    if target_hour == 15:
+
+    if target_hour == 14:
         res = target_time < hour_end
     elif target_hour == 23:
         res = target_time >= hour_start
     else:
         res = hour_start <= target_time < hour_end
 
-    print(f"[DEBUG: SCHEDULE] Responsibility check for target_hour={target_hour} -> Window: [{hour_start.strftime('%H:%M')} to {hour_end.strftime('%H:%M')}]. stream_target={target_time.strftime('%H:%M') if target_time else 'N/A'} -> Result: {res}")
+    print(
+        f"[DEBUG: SCHEDULE] Responsibility check for target_hour={target_hour} -> Window: [{hour_start.strftime('%H:%M')} to {hour_end.strftime('%H:%M')}]. stream_target={target_time.strftime('%H:%M') if target_time else 'N/A'} -> Result: {res}"
+    )
     return res
 
 
 # Read configuration
 with open("data.json", "r") as f:
     data = json.load(f)
-    print("Loaded Config Data:", data)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = data["channel_id"]
+all_links = (
+    data["room_link_n"]
+    + data["room_link_s"]
+    + data["room_link_h"]
+    + data.get("room_link_test", [])
+)
 
-all_links = data["room_link_n"] + data["room_link_s"] + data["room_link_h"] + data.get("room_link_test", [])
+now = datetime.now(jst)
+target_start = now.replace(hour=14, minute=0, second=0, microsecond=0)
 
-# Check if we are initiator or active monitor
-if not TARGET_HOUR_ENV:
-    now = datetime.now(jst)
-    target_start = now.replace(hour=15, minute=0, second=0, microsecond=0)
-    if now < target_start:
-        sleep_seconds = (target_start - now).total_seconds()
-        print(f"Initiator mode: Current time is {now.strftime('%H:%M:%S')}. Sleeping for {sleep_seconds:.1f} seconds until 15:00 JST.")
-        time.sleep(sleep_seconds)
-    else:
-        print(f"Initiator mode: Already past 15:00 JST (current: {now.strftime('%H:%M:%S')}). Dispatching 15:00 workflow immediately.")
+# ---- Automated Mode Smart Decision ----
+# If the workflow triggers before 14:00 JST, act as the pre-schedule sleeper instance.
+if now < target_start:
+    sleep_seconds = (target_start - now).total_seconds()
+    print(
+        f"Pre-schedule mode: Current time is {now.strftime('%H:%M:%S')}. Sleeping for {sleep_seconds:.1f} seconds until 14:00 JST."
+    )
+    time.sleep(sleep_seconds)
 
-    next_hour = (now + timedelta(hours=1)).hour
-    print(f"[DEBUG: INITIATOR] Calculating chain handoff. Current hour JST: {now.hour}, next target handoff: {next_hour}")
-    dispatch_self(next_hour)
-    print("Initiator run completed. Exiting.")
+    # After waking up at 14:00, kick off the first real active monitor job and exit.
+    dispatch_self()
+    print("Pre-schedule handoff completed. Exiting initializer run.")
     exit(0)
 
-# Active Monitor Mode
-target_hour = int(TARGET_HOUR_ENV)
-known_schedules = {}          # url_key -> ts or "LIVE"
-dispatched_schedules = set()  # url_key only
-current_active_runs = set()   # Cached active runs snapshot
+# ---- Active Monitor Mode (Runs if starting at or after 14:00 JST) ----
+target_hour = datetime.now(jst).hour
+
+known_schedules = {}
+dispatched_schedules = set()
+current_active_runs = set()
 
 script_start_time = datetime.now(jst)
 last_fetch_time = None
 next_dispatched = False
 
-print(f"Monitoring for target_hour={target_hour} JST")
+print(f"Monitoring dynamically anchored for target_hour={target_hour} JST")
 print("Running for 1.2 hours (72 minutes), fetching API every 1 minute...")
 
 while True:
@@ -178,15 +187,18 @@ while True:
         break
 
     if elapsed >= 3600 and not next_dispatched:
-        if target_hour < 23:
-            print(f"[DEBUG: CHAIN] 60-minute mark hit (Elapsed: {elapsed:.1f}s). Handoff triggering for hour: {target_hour + 1}")
-            dispatch_self(target_hour + 1)
+        print(
+            f"[DEBUG: CHAIN] 60-minute mark hit. Handing off execution to the next dynamic hour link."
+        )
+        dispatch_self()
         next_dispatched = True
 
     # ---- Fetch API every 1 minute ----
     if last_fetch_time is None or (now - last_fetch_time).total_seconds() >= 60:
         last_fetch_time = now
-        print(f"\n--- [{now.strftime('%Y-%m-%d %H:%M:%S')}] STARTING API REFRESH CYCLE ---")
+        print(
+            f"\n--- [{now.strftime('%Y-%m-%d %H:%M:%S')}] STARTING API REFRESH CYCLE ---"
+        )
 
         current_active_runs = get_active_downloading_keys()
 
@@ -195,16 +207,14 @@ while True:
                 room_api = f"https://public-api.showroom-cdn.com/room/{room_link}"
                 res = requests.get(room_api, timeout=10)
                 if res.status_code != 200:
-                    print(f"[DEBUG: API] Room link {room_link} returned status code {res.status_code}. Skipping.")
                     continue
                 result = res.json()
-                
-                is_live = result.get('is_live')
-                next_live = result.get('next_live_schedule')
-                print(f"[DEBUG: API] Checked {room_link}: is_live={is_live}, next_live_schedule={next_live}")
 
                 if not isinstance(result, dict):
                     continue
+
+                is_live = result.get("is_live")
+                next_live = result.get("next_live_schedule")
 
                 if "nekojita" in room_api and "乃木坂" not in result.get("name", ""):
                     continue
@@ -219,21 +229,32 @@ while True:
 
                 if ts:
                     target_time = get_target_time(ts, now)
-                    
-                    if ts != "LIVE" and not is_responsible_for(target_time, target_hour):
-                        print(f"[DEBUG: FILTER] Skipping {url_key} because it falls outside our target hour scope.")
+
+                    if ts != "LIVE" and not is_responsible_for(
+                        target_time, target_hour
+                    ):
+                        print(
+                            f"[DEBUG: FILTER] Skipping {url_key} - falls outside scope of JST hour {target_hour}."
+                        )
                         continue
 
                     if known_schedules.get(url_key) != ts:
-                        print(f"[DEBUG: STATE] State delta discovered for {url_key}: Old='{known_schedules.get(url_key)}' -> New='{ts}'")
+                        print(
+                            f"[DEBUG: STATE] State delta discovered for {url_key}: Old='{known_schedules.get(url_key)}' -> New='{ts}'"
+                        )
                         known_schedules[url_key] = ts
 
-                        if ts == "LIVE":
-                            time_str = "LIVE NOW"
-                        else:
-                            time_str = datetime.fromtimestamp(ts, tz=jst).strftime("%Y-%m-%d %H:%M")
+                        time_str = (
+                            "LIVE NOW"
+                            if ts == "LIVE"
+                            else datetime.fromtimestamp(ts, tz=jst).strftime(
+                                "%Y-%m-%d %H:%M"
+                            )
+                        )
 
-                        print(f"[NEW SCHEDULE/LIVE DETECTED] {result.get('name', url_key)}: {time_str}")
+                        print(
+                            f"[NEW SCHEDULE/LIVE DETECTED] {result.get('name', url_key)}: {time_str}"
+                        )
                         send_telegram_message(
                             TELEGRAM_BOT_TOKEN,
                             TELEGRAM_CHAT_ID,
@@ -242,8 +263,6 @@ while True:
 
             except Exception as e:
                 print(f"Error checking {room_link}: {e}")
-        
-        print(f"--- [DEBUG: INTERNAL STATE] Current known_schedules: {known_schedules} ---\n")
 
     # ---- Dispatch check loop (Runs every 10 seconds) ----
     for url_key, ts in list(known_schedules.items()):
@@ -259,17 +278,17 @@ while True:
                 should_dispatch = True
 
         if should_dispatch:
-            print(f"[DEBUG: DISPATCH] Match found! Preparing run logic for '{url_key}' (Condition Status: {ts})")
-            
-            # Intersect with our active run snapshot to check if a download workflow is already running
             already_running = any(url_key in title for title in current_active_runs)
-            print(f"[DEBUG: DISPATCH] Duplication Check for '{url_key}': already_running={already_running}")
-            
+
             if not already_running:
-                print(f"[DEBUG: DISPATCH] Triggering dispatch payload execution now for {url_key}...")
+                print(
+                    f"[DEBUG: DISPATCH] Triggering dispatch payload execution now for {url_key}..."
+                )
                 dispatch_download(url_key)
                 dispatched_schedules.add(url_key)
             else:
-                print(f"[SKIP DISPATCH] Download for {url_key} matches an open GitHub Action run. Will retry on next check if still live.")
+                print(
+                    f"[SKIP DISPATCH] Download for {url_key} matches an open GitHub Action run."
+                )
 
     time.sleep(10)
