@@ -1,9 +1,13 @@
 name: Download Handler
-run-name: Download stream for ${{ github.event.client_payload.url_key }}
+run-name: Download stream for ${{ inputs.url_key }}
 
 on:
-  repository_dispatch:
-    types: [trigger-download]
+  workflow_dispatch:
+    inputs:
+      url_key:
+        description: 'Room key to download'
+        required: true
+        type: string
 
 jobs:
   download:
@@ -12,7 +16,9 @@ jobs:
     steps:
       - name: Print received payload
         run: |
-          echo "url_key: ${{ github.event.client_payload.url_key }}"
+          echo "url_key: $URL_KEY"
+        env:
+          URL_KEY: ${{ inputs.url_key }}
 
 
       - name: Checkout repository
@@ -40,6 +46,6 @@ jobs:
           pip install requests pytz
           python download.py
         env:
-          url_key: ${{ github.event.client_payload.url_key }}
+          url_key: ${{ inputs.url_key }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
 

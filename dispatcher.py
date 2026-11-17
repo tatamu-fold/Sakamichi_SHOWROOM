@@ -9,7 +9,9 @@ import time
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 TARGET_REPO = os.getenv("TARGET_REPO")
 
-API_URL = f"https://api.github.com/repos/{TARGET_REPO}/dispatches"
+DOWNLOAD_WORKFLOW_URL = (
+    f"https://api.github.com/repos/{TARGET_REPO}/actions/workflows/download.yml/dispatches"
+)
 jst = pytz.timezone("Asia/Tokyo")
 
 
@@ -35,8 +37,8 @@ def check_day_relation_jst(timestamp: int) -> str:
 
 def dispatch_download(url_key):
     payload = {
-        "event_type": "trigger-download",
-        "client_payload": {"url_key": str(url_key)},
+        "ref": os.getenv("GITHUB_REF_NAME", "main"),
+        "inputs": {"url_key": str(url_key)},
     }
     headers = {
         "Accept": "application/vnd.github+json",
@@ -44,10 +46,13 @@ def dispatch_download(url_key):
         "X-GitHub-Api-Version": "2022-11-28",
     }
     try:
-        response = requests.post(API_URL, json=payload, headers=headers, timeout=10)
-        log(f"[DISPATCH SUCCESS] {url_key} - Status: {response.status_code}")
+        response = requests.post(
+            DOWNLOAD_WORKFLOW_URL, json=payload, headers=headers, timeout=10
+        )
+        response.raise_for_status()
+        log(f"[WORKFLOW DISPATCH SUCCESS] {url_key} - Status: {response.status_code}")
     except Exception as e:
-        log(f"[DISPATCH ERROR] {url_key} - Failed to fire webhook: {e}")
+        log(f"[WORKFLOW DISPATCH ERROR] {url_key} - Failed to dispatch workflow: {e}")
 
 
 def dispatch_self():
